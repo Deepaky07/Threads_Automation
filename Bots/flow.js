@@ -1139,8 +1139,8 @@ export default async function runComprehensiveFlowBot(config) {
         logInfo(`   ❤️ Likes: ${stats.likes} | 💬 Comments: ${stats.comments} | 💭 Replies: ${stats.replies}`);
         logInfo(`   📬 Notifications: ${stats.notificationsFound} | 📝 Posts Created: ${stats.postsCreated}`);
 
-        // Random delay between posts
-        await sleep(randomDelay(3000, 6000));
+        // Delay after processing each post
+        await sleep(randomDelay(4000, 7000));
 
       } catch (loopError) {
         logError(`⚠️ Error in loop: ${loopError.message}`);

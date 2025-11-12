@@ -494,6 +494,9 @@ export async function runSearchBot(config) {
         // Log progress with stats
         logInfo(`📊 Progress: ${totalProcessed}/${numPosts} posts | ❤️ ${stats.likes} likes | 💬 ${stats.comments} comments | 💭 ${stats.replies} replies`);
         
+        // Delay after processing each post
+        await sleep(randomDelay(4000, 7000));
+        
       } catch (error) {
         logError(`⚠️ Error processing post: ${error.message}`);
         consecutiveErrors++;

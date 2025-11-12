@@ -579,7 +579,7 @@ router.post('/api/profile/posts', async (req, res) => {
 
     // Navigate to user's profile page
     const profileUrl = `https://www.threads.net/@${username}`;
-    console.log(`📍 Navigating to profile page: ${profileUrl}`);
+    console.log(`🔍 Navigating to profile page: ${profileUrl}`);
     
     try {
       await page.goto(profileUrl, {
@@ -610,7 +610,16 @@ router.post('/api/profile/posts', async (req, res) => {
       });
       await sleep(1000);
     }
-    await sleep(2000); // Wait for content to load after scrolling
+    
+    // CRITICAL: Wait for engagement metrics to load
+    console.log('⏳ Waiting for engagement metrics to load...');
+    await sleep(3000);
+    
+    // Scroll back to top to ensure all posts are in viewport
+    await page.evaluate(() => {
+      window.scrollTo(0, 0);
+    });
+    await sleep(2000);
 
     // Extract all posts from profile page with engagement metrics, matching by post links
     const csvPostLinks = uniquePosts.map(p => p.postLink).filter(Boolean);
@@ -658,6 +667,102 @@ router.post('/api/profile/posts', async (req, res) => {
 
       console.log(`🔍 Looking for ${csvPostLinks.length} posts on profile page...`);
       
+      // Helper function to extract engagement metrics
+      const extractEngagementMetric = (container, svgAriaLabel) => {
+        try {
+          // Find the SVG with the specific aria-label
+          const svg = container.querySelector(`svg[aria-label="${svgAriaLabel}"]`) || 
+                      container.querySelector(`svg[aria-label*="${svgAriaLabel}"]`);
+          
+          if (!svg) return '0';
+          
+          // Get the parent button/div
+          const button = svg.closest('button') || svg.closest('[role="button"]') || svg.closest('div[class*="x1i10hfl"]');
+          if (!button) return '0';
+          
+          // The count span is a SIBLING of the SVG container, not inside the button
+          // Structure: button > div > div > svg AND button > div > div > span.xmd891q
+          const svgParent = svg.parentElement;
+          const svgGrandParent = svgParent?.parentElement;
+          
+          // Method 1: Look for span.xmd891q as sibling of SVG container
+          if (svgGrandParent) {
+            const countContainer = svgGrandParent.querySelector('span.xmd891q') || 
+                                  svgGrandParent.querySelector('span[class*="xmd891q"]');
+            if (countContainer) {
+              const innerDiv = countContainer.querySelector('div.xu9jpxn') || 
+                              countContainer.querySelector('div[class*="xu9jpxn"]');
+              if (innerDiv) {
+                const countSpan = innerDiv.querySelector('span.x1o0tod') ||
+                                 innerDiv.querySelector('span[class*="x1o0tod"]') ||
+                                 innerDiv.querySelector('span.x10l6tqk') ||
+                                 innerDiv.querySelector('span[class*="x10l6tqk"]') ||
+                                 innerDiv.querySelector('span.x13vifvy') ||
+                                 innerDiv.querySelector('span[class*="x13vifvy"]') ||
+                                 innerDiv.querySelector('span');
+                if (countSpan) {
+                  const text = countSpan.textContent?.trim();
+                  if (text && /^\d+$/.test(text)) {
+                    console.log(`✅ Found ${svgAriaLabel} count: ${text}`);
+                    return text;
+                  }
+                }
+              }
+            }
+          }
+          
+          // Method 2: Look in button's parent container
+          const buttonParent = button.parentElement;
+          if (buttonParent) {
+            const countContainer = buttonParent.querySelector('span.xmd891q') || 
+                                  buttonParent.querySelector('span[class*="xmd891q"]');
+            if (countContainer) {
+              const innerDiv = countContainer.querySelector('div.xu9jpxn') || 
+                              countContainer.querySelector('div[class*="xu9jpxn"]');
+              if (innerDiv) {
+                const countSpan = innerDiv.querySelector('span');
+                if (countSpan) {
+                  const text = countSpan.textContent?.trim();
+                  if (text && /^\d+$/.test(text)) {
+                    console.log(`✅ Found ${svgAriaLabel} count (method 2): ${text}`);
+                    return text;
+                  }
+                }
+              }
+            }
+          }
+          
+          // Method 3: Look directly inside button for any span with the count classes
+          const countSpans = button.querySelectorAll('span[class*="x1o0tod"], span[class*="x10l6tqk"], span[class*="x13vifvy"]');
+          for (const span of countSpans) {
+            const text = span.textContent?.trim();
+            if (text && /^\d+$/.test(text)) {
+              console.log(`✅ Found ${svgAriaLabel} count (method 3): ${text}`);
+              return text;
+            }
+          }
+          
+          // Method 4: Check all spans in button's parent for pure numbers
+          if (buttonParent) {
+            const allSpans = buttonParent.querySelectorAll('span');
+            for (const span of allSpans) {
+              const text = span.textContent?.trim();
+              // Only accept pure numbers (not "39m", "3d", etc.)
+              if (text && /^\d+$/.test(text) && text.length <= 6) {
+                console.log(`✅ Found ${svgAriaLabel} count (method 4): ${text}`);
+                return text;
+              }
+            }
+          }
+          
+          console.log(`⚠️ No count found for ${svgAriaLabel}`);
+          return '0';
+        } catch (err) {
+          console.error(`Error extracting ${svgAriaLabel}:`, err);
+          return '0';
+        }
+      };
+      
       // Find all post containers on the profile page
       // Based on provided HTML: posts are in div[data-pressable-container="true"]
       const postContainers = Array.from(document.querySelectorAll('div[data-pressable-container="true"]'));
@@ -684,322 +789,104 @@ router.post('/api/profile/posts', async (req, res) => {
         if (originalLink) {
           console.log(`✅ Found matching post: ${originalLink} (container ${index + 1})`);
           
-                 // Extract engagement metrics from buttons at the bottom of the post
-                 // Based on provided HTML structure: 
-                 // div.x78zum5 > div.x6s0dn4.x78zum5.xl56j7k > button > svg[aria-label] + span.xmd891q > div.xu9jpxn > span.x1o0tod.x10l6tqk.x13vifvy
-                 const engagementContainer = container.querySelector('div.x78zum5') || 
-                                           container.querySelector('div[class*="x78zum5"]');
-                 
-                 let likes = '0';
-                 let replies = '0';
-                 let reposts = '0';
-                 let shares = '0';
-                 
-                 if (engagementContainer) {
-                   // Extract likes - Look for Like/Unlike button
-                   // Structure: button > svg[aria-label="Like" or "Unlike"] + span.xmd891q > div.xu9jpxn > span.x1o0tod.x10l6tqk.x13vifvy
-                   const likeButton = engagementContainer.querySelector('svg[aria-label="Like"]') || 
-                                   engagementContainer.querySelector('svg[aria-label="Unlike"]') ||
-                                   engagementContainer.querySelector('svg[aria-label*="Like"]');
-                   if (likeButton) {
-                     const button = likeButton.closest('button');
-                     if (button) {
-                       // Method 1: Look for span.xmd891q which contains the count (new structure from provided HTML)
-                       const md891qSpan = button.querySelector('span.xmd891q') || 
-                                        button.querySelector('span[class*="xmd891q"]') ||
-                                        button.parentElement?.querySelector('span.xmd891q') ||
-                                        button.parentElement?.querySelector('span[class*="xmd891q"]');
-                       
-                       if (md891qSpan) {
-                         // Inside span.xmd891q, look for div.xu9jpxn > span.x1o0tod.x10l6tqk.x13vifvy
-                         const xu9jpxnDiv = md891qSpan.querySelector('div.xu9jpxn') || 
-                                          md891qSpan.querySelector('div[class*="xu9jpxn"]');
-                         if (xu9jpxnDiv) {
-                           const countSpan = xu9jpxnDiv.querySelector('span.x1o0tod') || 
-                                           xu9jpxnDiv.querySelector('span[class*="x1o0tod"]') ||
-                                           xu9jpxnDiv.querySelector('span[class*="x10l6tqk"]') ||
-                                           xu9jpxnDiv.querySelector('span[class*="x13vifvy"]');
-                           if (countSpan) {
-                             const countText = countSpan.textContent?.trim() || '';
-                             const numMatch = countText.match(/^\d+$/);
-                             if (numMatch) {
-                               likes = numMatch[0];
-                             }
-                           }
-                         }
-                         
-                         // Fallback: Look for any span with number inside span.xmd891q
-                         if (likes === '0') {
-                           const allSpans = md891qSpan.querySelectorAll('span');
-                           for (const span of allSpans) {
-                             const text = span.textContent?.trim() || '';
-                             const numMatch = text.match(/^\d+$/);
-                             if (numMatch) {
-                               likes = numMatch[0];
-                               break;
-                             }
-                           }
-                         }
-                       }
-                       
-                       // Method 2: Look for count in span with class "x1o0tod x10l6tqk x13vifvy" (direct fallback)
-                       if (likes === '0') {
-                         const countSpan = button.querySelector('span.x1o0tod') || 
-                                         button.querySelector('span[class*="x1o0tod"]') ||
-                                         button.querySelector('span[class*="x10l6tqk"]') ||
-                                         button.querySelector('span[class*="x13vifvy"]') ||
-                                         button.querySelector('div[class*="xu9jpxn"] span');
-                         
-                         if (countSpan) {
-                           const countText = countSpan.textContent?.trim() || '';
-                           const numMatch = countText.match(/^\d+$/);
-                           if (numMatch) {
-                             likes = numMatch[0];
-                           }
-                         }
-                       }
-                       
-                       // Method 3: Fallback - try button text
-                       if (likes === '0') {
-                         const buttonText = button.textContent.trim();
-                         const match = buttonText.match(/(\d+)/);
-                         if (match) {
-                           likes = match[1];
-                         }
-                       }
-                     }
-                   }
-                   
-                   // Extract replies - Look for Reply button (same structure as likes)
-                   const replyButton = engagementContainer.querySelector('svg[aria-label="Reply"]') || 
-                                     engagementContainer.querySelector('svg[aria-label*="Reply"]');
-                   if (replyButton) {
-                     const button = replyButton.closest('button');
-                     if (button) {
-                       // Look for span.xmd891q structure
-                       const md891qSpan = button.querySelector('span.xmd891q') || 
-                                        button.querySelector('span[class*="xmd891q"]') ||
-                                        button.parentElement?.querySelector('span.xmd891q') ||
-                                        button.parentElement?.querySelector('span[class*="xmd891q"]');
-                       
-                       if (md891qSpan) {
-                         const xu9jpxnDiv = md891qSpan.querySelector('div.xu9jpxn') || 
-                                          md891qSpan.querySelector('div[class*="xu9jpxn"]');
-                         if (xu9jpxnDiv) {
-                           const countSpan = xu9jpxnDiv.querySelector('span.x1o0tod') || 
-                                           xu9jpxnDiv.querySelector('span[class*="x1o0tod"]') ||
-                                           xu9jpxnDiv.querySelector('span[class*="x10l6tqk"]') ||
-                                           xu9jpxnDiv.querySelector('span[class*="x13vifvy"]');
-                           if (countSpan) {
-                             const countText = countSpan.textContent?.trim() || '';
-                             const numMatch = countText.match(/^\d+$/);
-                             if (numMatch) {
-                               replies = numMatch[0];
-                             }
-                           }
-                         }
-                         
-                         if (replies === '0') {
-                           const allSpans = md891qSpan.querySelectorAll('span');
-                           for (const span of allSpans) {
-                             const text = span.textContent?.trim() || '';
-                             const numMatch = text.match(/^\d+$/);
-                             if (numMatch) {
-                               replies = numMatch[0];
-                               break;
-                             }
-                           }
-                         }
-                       }
-                       
-                       // Fallback methods
-                       if (replies === '0') {
-                         const countSpan = button.querySelector('span.x1o0tod') || 
-                                         button.querySelector('span[class*="x1o0tod"]') ||
-                                         button.querySelector('span[class*="x10l6tqk"]') ||
-                                         button.querySelector('div[class*="xu9jpxn"] span');
-                         
-                         if (countSpan) {
-                           const countText = countSpan.textContent?.trim() || '';
-                           const numMatch = countText.match(/^\d+$/);
-                           if (numMatch) {
-                             replies = numMatch[0];
-                           }
-                         }
-                       }
-                       
-                       if (replies === '0') {
-                         const buttonText = button.textContent.trim();
-                         const match = buttonText.match(/(\d+)/);
-                         if (match) {
-                           replies = match[1];
-                         }
-                       }
-                     }
-                   }
-                   
-                   // Extract reposts - Look for Repost button (same structure as likes)
-                   const repostButton = engagementContainer.querySelector('svg[aria-label="Repost"]') || 
-                                      engagementContainer.querySelector('svg[aria-label*="Repost"]');
-                   if (repostButton) {
-                     const button = repostButton.closest('button');
-                     if (button) {
-                       // Look for span.xmd891q structure
-                       const md891qSpan = button.querySelector('span.xmd891q') || 
-                                        button.querySelector('span[class*="xmd891q"]') ||
-                                        button.parentElement?.querySelector('span.xmd891q') ||
-                                        button.parentElement?.querySelector('span[class*="xmd891q"]');
-                       
-                       if (md891qSpan) {
-                         const xu9jpxnDiv = md891qSpan.querySelector('div.xu9jpxn') || 
-                                          md891qSpan.querySelector('div[class*="xu9jpxn"]');
-                         if (xu9jpxnDiv) {
-                           const countSpan = xu9jpxnDiv.querySelector('span.x1o0tod') || 
-                                           xu9jpxnDiv.querySelector('span[class*="x1o0tod"]') ||
-                                           xu9jpxnDiv.querySelector('span[class*="x10l6tqk"]') ||
-                                           xu9jpxnDiv.querySelector('span[class*="x13vifvy"]');
-                           if (countSpan) {
-                             const countText = countSpan.textContent?.trim() || '';
-                             const numMatch = countText.match(/^\d+$/);
-                             if (numMatch) {
-                               reposts = numMatch[0];
-                             }
-                           }
-                         }
-                         
-                         if (reposts === '0') {
-                           const allSpans = md891qSpan.querySelectorAll('span');
-                           for (const span of allSpans) {
-                             const text = span.textContent?.trim() || '';
-                             const numMatch = text.match(/^\d+$/);
-                             if (numMatch) {
-                               reposts = numMatch[0];
-                               break;
-                             }
-                           }
-                         }
-                       }
-                       
-                       // Fallback methods
-                       if (reposts === '0') {
-                         const countSpan = button.querySelector('span.x1o0tod') || 
-                                         button.querySelector('span[class*="x1o0tod"]') ||
-                                         button.querySelector('span[class*="x10l6tqk"]') ||
-                                         button.querySelector('div[class*="xu9jpxn"] span');
-                         
-                         if (countSpan) {
-                           const countText = countSpan.textContent?.trim() || '';
-                           const numMatch = countText.match(/^\d+$/);
-                           if (numMatch) {
-                             reposts = numMatch[0];
-                           }
-                         }
-                       }
-                       
-                       if (reposts === '0') {
-                         const buttonText = button.textContent.trim();
-                         const match = buttonText.match(/(\d+)/);
-                         if (match) {
-                           reposts = match[1];
-                         }
-                       }
-                     }
-                   }
-                   
-                   // Extract shares - Look for Share button (same structure as likes)
-                   const shareButton = engagementContainer.querySelector('svg[aria-label="Share"]') || 
-                                     engagementContainer.querySelector('svg[aria-label*="Share"]');
-                   if (shareButton) {
-                     const button = shareButton.closest('button');
-                     if (button) {
-                       // Look for span.xmd891q structure
-                       const md891qSpan = button.querySelector('span.xmd891q') || 
-                                        button.querySelector('span[class*="xmd891q"]') ||
-                                        button.parentElement?.querySelector('span.xmd891q') ||
-                                        button.parentElement?.querySelector('span[class*="xmd891q"]');
-                       
-                       if (md891qSpan) {
-                         const xu9jpxnDiv = md891qSpan.querySelector('div.xu9jpxn') || 
-                                          md891qSpan.querySelector('div[class*="xu9jpxn"]');
-                         if (xu9jpxnDiv) {
-                           const countSpan = xu9jpxnDiv.querySelector('span.x1o0tod') || 
-                                           xu9jpxnDiv.querySelector('span[class*="x1o0tod"]') ||
-                                           xu9jpxnDiv.querySelector('span[class*="x10l6tqk"]') ||
-                                           xu9jpxnDiv.querySelector('span[class*="x13vifvy"]');
-                           if (countSpan) {
-                             const countText = countSpan.textContent?.trim() || '';
-                             const numMatch = countText.match(/^\d+$/);
-                             if (numMatch) {
-                               shares = numMatch[0];
-                             }
-                           }
-                         }
-                         
-                         if (shares === '0') {
-                           const allSpans = md891qSpan.querySelectorAll('span');
-                           for (const span of allSpans) {
-                             const text = span.textContent?.trim() || '';
-                             const numMatch = text.match(/^\d+$/);
-                             if (numMatch) {
-                               shares = numMatch[0];
-                               break;
-                             }
-                           }
-                         }
-                       }
-                       
-                       // Fallback methods
-                       if (shares === '0') {
-                         const countSpan = button.querySelector('span.x1o0tod') || 
-                                         button.querySelector('span[class*="x1o0tod"]') ||
-                                         button.querySelector('span[class*="x10l6tqk"]') ||
-                                         button.querySelector('div[class*="xu9jpxn"] span');
-                         
-                         if (countSpan) {
-                           const countText = countSpan.textContent?.trim() || '';
-                           const numMatch = countText.match(/^\d+$/);
-                           if (numMatch) {
-                             shares = numMatch[0];
-                           }
-                         }
-                       }
-                       
-                       if (shares === '0') {
-                         const buttonText = button.textContent.trim();
-                         const match = buttonText.match(/(\d+)/);
-                         if (match) {
-                           shares = match[1];
-                         }
-                       }
-                     }
-                   }
-                 }
-                 
-                 // Store the post data with engagement metrics
-                 postsMap[originalLink] = {
-                   postLink: originalLink,
-                   likes,
-                   replies,
-                   reposts,
-                   shares
-                 };
-                 
-                 console.log(`📊 Extracted metrics for ${originalLink}:`, {
-                   likes,
-                   replies,
-                   reposts,
-                   shares
-                 });
-               }
-             });
-             
-             return postsMap;
-           }, csvPostLinks);
+          // Find the engagement container
+          let engagementContainer = container.querySelector('div.x78zum5');
+          if (!engagementContainer) {
+            engagementContainer = container.querySelector('div[class*="x78zum5"]');
+          }
+          
+          // If still not found, look for the parent of buttons with engagement SVGs
+          if (!engagementContainer) {
+            const likeButton = container.querySelector('svg[aria-label*="Like"]');
+            if (likeButton) {
+              engagementContainer = likeButton.closest('div[class*="x78zum5"]') || 
+                                   likeButton.closest('div.x6s0dn4') ||
+                                   likeButton.closest('div');
+            }
+          }
+          
+          console.log(`🔍 Engagement container found: ${!!engagementContainer}`);
+          
+          let likes = '0';
+          let replies = '0';
+          let reposts = '0';
+          let shares = '0';
+          
+          if (engagementContainer) {
+            // Debug: log the container HTML
+            console.log(`📋 Container HTML sample:`, engagementContainer.innerHTML.substring(0, 500));
+            
+            likes = extractEngagementMetric(engagementContainer, 'Like') || 
+                    extractEngagementMetric(engagementContainer, 'Unlike') || '0';
+            replies = extractEngagementMetric(engagementContainer, 'Reply') || '0';
+            reposts = extractEngagementMetric(engagementContainer, 'Repost') || '0';
+            shares = extractEngagementMetric(engagementContainer, 'Share') || '0';
+            
+            console.log(`📊 Extracted metrics - Likes: ${likes}, Replies: ${replies}, Reposts: ${reposts}, Shares: ${shares}`);
+            
+            // FALLBACK: If all metrics are 0, try a simpler direct approach
+            if (likes === '0' && replies === '0' && reposts === '0' && shares === '0') {
+              console.log(`⚠️ All metrics are 0, trying direct approach...`);
+              
+              // Find all divs with role="button" or actual buttons
+              const allButtons = container.querySelectorAll('div[role="button"], button');
+              console.log(`🔍 Found ${allButtons.length} buttons in container`);
+              
+              allButtons.forEach((btn, btnIdx) => {
+                const svg = btn.querySelector('svg');
+                if (!svg) return;
+                
+                const ariaLabel = svg.getAttribute('aria-label') || '';
+                console.log(`🔍 Button ${btnIdx} has SVG with aria-label: ${ariaLabel}`);
+                
+                // Look for span with number next to this button
+                const btnParent = btn.parentElement;
+                if (btnParent) {
+                  const spans = btnParent.querySelectorAll('span');
+                  spans.forEach(span => {
+                    const text = span.textContent?.trim();
+                    if (text && /^\d+$/.test(text)) {
+                      console.log(`🔢 Found number "${text}" near ${ariaLabel} button`);
+                      if (ariaLabel.includes('Like') || ariaLabel.includes('Unlike')) {
+                        likes = text;
+                      } else if (ariaLabel.includes('Reply')) {
+                        replies = text;
+                      } else if (ariaLabel.includes('Repost')) {
+                        reposts = text;
+                      } else if (ariaLabel.includes('Share')) {
+                        shares = text;
+                      }
+                    }
+                  });
+                }
+              });
+              
+              console.log(`📊 After direct approach - Likes: ${likes}, Replies: ${replies}, Reposts: ${reposts}, Shares: ${shares}`);
+            }
+          } else {
+            console.warn('⚠️ Could not find engagement container for post');
+          }
+          
+          // Store the post data with engagement metrics
+          postsMap[originalLink] = {
+            postLink: originalLink,
+            likes,
+            replies,
+            reposts,
+            shares
+          };
+          
+          console.log(`📊 Stored post ${originalLink}:`, postsMap[originalLink]);
+        }
+      });
+      
+      return postsMap;
+    }, csvPostLinks);
 
     console.log(`📊 Extracted engagement metrics for ${Object.keys(profilePosts).length} posts from profile page`);
     if (Object.keys(profilePosts).length > 0) {
       console.log(`📊 Sample extracted posts:`, Object.keys(profilePosts).slice(0, 2).map(key => ({ link: key, metrics: profilePosts[key] })));
-        } else {
+    } else {
       console.warn(`⚠️ No posts extracted from profile page!`);
     }
 
@@ -1045,31 +932,36 @@ router.post('/api/profile/posts', async (req, res) => {
       const reposts = profilePost?.reposts || '0';
       const shares = profilePost?.shares || '0';
       
-          postsWithInsights.push({
-            index: i,
-            postId: post.postId || '',
-            postLink: post.postLink || '',
+      // Calculate total interactions
+      const totalInteractions = (parseInt(likes) + parseInt(replies) + parseInt(reposts) + parseInt(shares)).toString();
+      
+      const postData = {
+        index: i,
+        postId: post.postId || '',
+        postLink: post.postLink || '',
         postContent: post.postContent || '',
         timestamp: post.timestamp || '',
         username: post.username || username,
-            mediaUrls: [],
+        mediaUrls: [],
         likes,
         replies,
         reposts,
         shares,
         insights: {
           views: '0', // Views not available on profile page
-          totalInteractions: '0',
+          totalInteractions,
           likes,
           quotes: '0',
           replies,
           reposts,
           profileFollows: '0'
         }
-      });
+      };
+      
+      postsWithInsights.push(postData);
       
       if (profilePost) {
-        console.log(`✅ Matched post ${i + 1}/${uniquePosts.length}: ${post.postLink || post.postId}`);
+        console.log(`✅ Matched post ${i + 1}/${uniquePosts.length}: ${post.postLink || post.postId} - Likes: ${likes}, Replies: ${replies}, Reposts: ${reposts}`);
       } else {
         console.log(`⚠️ No match found for post ${i + 1}/${uniquePosts.length}: ${post.postLink || post.postId}`);
       }
@@ -1168,7 +1060,7 @@ router.post('/api/profile/posts-scrape', async (req, res) => {
 
     // Navigate to user's profile
     const profileUrl = `https://www.threads.net/@${username}`;
-    console.log(`📍 Navigating to: ${profileUrl}`);
+    console.log(`🔍 Navigating to: ${profileUrl}`);
     
     await page.goto(profileUrl, {
       waitUntil: 'domcontentloaded',
@@ -1217,6 +1109,101 @@ router.post('/api/profile/posts-scrape', async (req, res) => {
       const containers = document.querySelectorAll('div[data-pressable-container="true"]');
       const limit = Math.min(containers.length, maxPosts || 50);
       const extractedPosts = [];
+
+      // Helper function to extract engagement metrics
+      const extractEngagementMetric = (container, svgAriaLabel) => {
+        try {
+          const svg = container.querySelector(`svg[aria-label="${svgAriaLabel}"]`) || 
+                      container.querySelector(`svg[aria-label*="${svgAriaLabel}"]`);
+          
+          if (!svg) return '0';
+          
+          // Get the button/clickable element
+          const button = svg.closest('button') || svg.closest('[role="button"]') || svg.closest('div[class*="x1i10hfl"]');
+          if (!button) return '0';
+          
+          // The count span is a SIBLING of the SVG container, not inside the button
+          // Structure: button > div > div > svg AND button > div > div > span.xmd891q
+          const svgParent = svg.parentElement;
+          const svgGrandParent = svgParent?.parentElement;
+          
+          // Method 1: Look for span.xmd891q as sibling of SVG container
+          if (svgGrandParent) {
+            const countContainer = svgGrandParent.querySelector('span.xmd891q') || 
+                                  svgGrandParent.querySelector('span[class*="xmd891q"]');
+            if (countContainer) {
+              const innerDiv = countContainer.querySelector('div.xu9jpxn') || 
+                              countContainer.querySelector('div[class*="xu9jpxn"]');
+              if (innerDiv) {
+                const countSpan = innerDiv.querySelector('span.x1o0tod') ||
+                                 innerDiv.querySelector('span[class*="x1o0tod"]') ||
+                                 innerDiv.querySelector('span.x10l6tqk') ||
+                                 innerDiv.querySelector('span[class*="x10l6tqk"]') ||
+                                 innerDiv.querySelector('span.x13vifvy') ||
+                                 innerDiv.querySelector('span[class*="x13vifvy"]') ||
+                                 innerDiv.querySelector('span');
+                if (countSpan) {
+                  const text = countSpan.textContent?.trim();
+                  if (text && /^\d+$/.test(text)) {
+                    console.log(`✅ Found ${svgAriaLabel} count: ${text}`);
+                    return text;
+                  }
+                }
+              }
+            }
+          }
+          
+          // Method 2: Look in button's parent container
+          const buttonParent = button.parentElement;
+          if (buttonParent) {
+            const countContainer = buttonParent.querySelector('span.xmd891q') || 
+                                  buttonParent.querySelector('span[class*="xmd891q"]');
+            if (countContainer) {
+              const innerDiv = countContainer.querySelector('div.xu9jpxn') || 
+                              countContainer.querySelector('div[class*="xu9jpxn"]');
+              if (innerDiv) {
+                const countSpan = innerDiv.querySelector('span');
+                if (countSpan) {
+                  const text = countSpan.textContent?.trim();
+                  if (text && /^\d+$/.test(text)) {
+                    console.log(`✅ Found ${svgAriaLabel} count (method 2): ${text}`);
+                    return text;
+                  }
+                }
+              }
+            }
+          }
+          
+          // Method 3: Look directly inside button for any span with the count classes
+          const countSpans = button.querySelectorAll('span[class*="x1o0tod"], span[class*="x10l6tqk"], span[class*="x13vifvy"]');
+          for (const span of countSpans) {
+            const text = span.textContent?.trim();
+            if (text && /^\d+$/.test(text)) {
+              console.log(`✅ Found ${svgAriaLabel} count (method 3): ${text}`);
+              return text;
+            }
+          }
+          
+          // Method 4: Check all spans in button's parent for pure numbers
+          if (buttonParent) {
+            const allSpans = buttonParent.querySelectorAll('span');
+            for (const span of allSpans) {
+              const text = span.textContent?.trim();
+              // Only accept pure numbers (not "39m", "3d", etc.)
+              if (text && /^\d+$/.test(text) && text.length <= 6) {
+                console.log(`✅ Found ${svgAriaLabel} count (method 4): ${text}`);
+                return text;
+              }
+            }
+          }
+          
+          console.log(`⚠️ No count found for ${svgAriaLabel}`);
+          return '0';
+        } catch (err) {
+          console.error(`❌ Error extracting ${svgAriaLabel}:`, err);
+          return '0';
+        }
+      };
 
       for (let index = 0; index < limit; index++) {
         const container = containers[index];
@@ -1334,10 +1321,20 @@ router.post('/api/profile/posts-scrape', async (req, res) => {
             });
           }
 
-          // Extract engagement metrics from buttons at the bottom of the post
-          // Based on provided HTML: buttons are in div.x78zum5 > div.x6s0dn4.x78zum5.xl56j7k
-          const engagementContainer = container.querySelector('div.x78zum5') || 
-                                    container.querySelector('div[class*="x78zum5"]');
+          // Extract engagement metrics
+          let engagementContainer = container.querySelector('div.x78zum5');
+          if (!engagementContainer) {
+            engagementContainer = container.querySelector('div[class*="x78zum5"]');
+          }
+          
+          if (!engagementContainer) {
+            const likeButton = container.querySelector('svg[aria-label*="Like"]');
+            if (likeButton) {
+              engagementContainer = likeButton.closest('div[class*="x78zum5"]') || 
+                                   likeButton.closest('div.x6s0dn4') ||
+                                   likeButton.closest('div');
+            }
+          }
           
           let likes = '0';
           let replies = '0';
@@ -1345,125 +1342,11 @@ router.post('/api/profile/posts-scrape', async (req, res) => {
           let shares = '0';
           
           if (engagementContainer) {
-            // Extract likes - Look for Like/Unlike button
-            const likeButton = engagementContainer.querySelector('svg[aria-label="Like"]') || 
-                            engagementContainer.querySelector('svg[aria-label="Unlike"]') ||
-                            engagementContainer.querySelector('svg[aria-label*="Like"]');
-            if (likeButton) {
-              const button = likeButton.closest('button');
-              if (button) {
-                // Look for count in span with class "x1o0tod x10l6tqk x13vifvy"
-                const countSpan = button.querySelector('span.x1o0tod') || 
-                                button.querySelector('span[class*="x1o0tod"]') ||
-                                button.querySelector('span[class*="x10l6tqk"]') ||
-                                button.querySelector('span[class*="x13vifvy"]') ||
-                                button.querySelector('div[class*="xu9jpxn"] span');
-                
-                if (countSpan) {
-                  const countText = countSpan.textContent?.trim() || '';
-                  const numMatch = countText.match(/^\d+$/);
-                  if (numMatch) {
-                    likes = numMatch[0];
-                  }
-                }
-                
-                // Fallback: try button text
-                if (likes === '0') {
-                  const buttonText = button.textContent.trim();
-                  const match = buttonText.match(/(\d+)/);
-                  if (match) {
-                    likes = match[1];
-                  }
-                }
-              }
-            }
-            
-            // Extract replies - Look for Reply button
-            const replyButton = engagementContainer.querySelector('svg[aria-label="Reply"]') || 
-                              engagementContainer.querySelector('svg[aria-label*="Reply"]');
-            if (replyButton) {
-              const button = replyButton.closest('button');
-              if (button) {
-                const countSpan = button.querySelector('span.x1o0tod') || 
-                                button.querySelector('span[class*="x1o0tod"]') ||
-                                button.querySelector('span[class*="x10l6tqk"]') ||
-                                button.querySelector('div[class*="xu9jpxn"] span');
-                
-                if (countSpan) {
-                  const countText = countSpan.textContent?.trim() || '';
-                  const numMatch = countText.match(/^\d+$/);
-                  if (numMatch) {
-                    replies = numMatch[0];
-                  }
-                }
-                
-                if (replies === '0') {
-                  const buttonText = button.textContent.trim();
-                  const match = buttonText.match(/(\d+)/);
-                  if (match) {
-                    replies = match[1];
-                  }
-                }
-              }
-            }
-            
-            // Extract reposts - Look for Repost button
-            const repostButton = engagementContainer.querySelector('svg[aria-label="Repost"]') || 
-                               engagementContainer.querySelector('svg[aria-label*="Repost"]');
-            if (repostButton) {
-              const button = repostButton.closest('button');
-              if (button) {
-                const countSpan = button.querySelector('span.x1o0tod') || 
-                                button.querySelector('span[class*="x1o0tod"]') ||
-                                button.querySelector('span[class*="x10l6tqk"]') ||
-                                button.querySelector('div[class*="xu9jpxn"] span');
-                
-                if (countSpan) {
-                  const countText = countSpan.textContent?.trim() || '';
-                  const numMatch = countText.match(/^\d+$/);
-                  if (numMatch) {
-                    reposts = numMatch[0];
-                  }
-                }
-                
-                if (reposts === '0') {
-                  const buttonText = button.textContent.trim();
-                  const match = buttonText.match(/(\d+)/);
-                  if (match) {
-                    reposts = match[1];
-                  }
-                }
-              }
-            }
-            
-            // Extract shares - Look for Share button
-            const shareButton = engagementContainer.querySelector('svg[aria-label="Share"]') || 
-                              engagementContainer.querySelector('svg[aria-label*="Share"]');
-            if (shareButton) {
-              const button = shareButton.closest('button');
-              if (button) {
-                const countSpan = button.querySelector('span.x1o0tod') || 
-                                button.querySelector('span[class*="x1o0tod"]') ||
-                                button.querySelector('span[class*="x10l6tqk"]') ||
-                                button.querySelector('div[class*="xu9jpxn"] span');
-                
-                if (countSpan) {
-                  const countText = countSpan.textContent?.trim() || '';
-                  const numMatch = countText.match(/^\d+$/);
-                  if (numMatch) {
-                    shares = numMatch[0];
-                  }
-                }
-                
-                if (shares === '0') {
-                  const buttonText = button.textContent.trim();
-                  const match = buttonText.match(/(\d+)/);
-                  if (match) {
-                    shares = match[1];
-                  }
-                }
-              }
-            }
+            likes = extractEngagementMetric(engagementContainer, 'Like') || 
+                    extractEngagementMetric(engagementContainer, 'Unlike') || '0';
+            replies = extractEngagementMetric(engagementContainer, 'Reply') || '0';
+            reposts = extractEngagementMetric(engagementContainer, 'Repost') || '0';
+            shares = extractEngagementMetric(engagementContainer, 'Share') || '0';
           }
 
           // Only include posts with valid data
@@ -1621,34 +1504,20 @@ router.post('/api/profile/post-insights', async (req, res) => {
       postUrl = `https://www.threads.net/@${username}/post/${postId}`;
     }
 
-    console.log(`📍 Navigating to: ${postUrl}`);
+    console.log(`🔍 Navigating to: ${postUrl}`);
     await page.goto(postUrl, {
-      waitUntil: 'domcontentloaded',
+      waitUntil: 'networkidle',
       timeout: 30000,
     });
-    await sleep(3000);
+    await sleep(5000); // Wait for page to fully load
 
-    // Try to find and click insights button
-    const insightsClicked = await page.evaluate(() => {
-      const insightsSvg = document.querySelector('svg[aria-label="Insights"]') ||
-                          document.querySelector('svg[aria-label*="Insight"]');
-      if (insightsSvg) {
-        const button = insightsSvg.closest('button') || 
-                      insightsSvg.closest('a') ||
-                      insightsSvg.closest('[role="button"]');
-        if (button) {
-          button.click();
-          return true;
-        }
-      }
-      return false;
+    // Scroll to ensure post is visible
+    await page.evaluate(() => {
+      window.scrollTo(0, 0);
     });
+    await sleep(2000);
 
-    if (insightsClicked) {
-      await sleep(3000);
-    }
-
-    // Extract insights from the insights modal
+    // Extract engagement metrics directly from post buttons (same as other endpoints)
     const insights = await page.evaluate(() => {
       const result = {
         views: '0',
@@ -1657,70 +1526,129 @@ router.post('/api/profile/post-insights', async (req, res) => {
         quotes: '0',
         replies: '0',
         reposts: '0',
+        shares: '0',
         profileFollows: '0'
       };
 
-      // Find Views section
-      const viewsSections = Array.from(document.querySelectorAll('div[class*="x13jy36j"]'));
-      const viewsSection = viewsSections.find(section => {
-        const text = section.textContent || '';
-        return text.includes('Views') || text.includes('Total views');
-      });
-
-      if (viewsSection) {
-        const viewsText = viewsSection.textContent || '';
-        const viewsMatch = viewsText.match(/(\d+)\s*Total views/i) || 
-                         viewsText.match(/Total views[^\d]*(\d+)/i);
-        if (viewsMatch && viewsMatch[1]) {
-          result.views = viewsMatch[1];
-        }
-      }
-
-      // Find Interactions section
-      const interactionsSection = viewsSections.find(section => {
-        const text = section.textContent || '';
-        return text.includes('Interactions') || text.includes('Total interactions');
-      });
-
-      if (interactionsSection) {
-        const interactionsText = interactionsSection.textContent || '';
-        const interactionsMatch = interactionsText.match(/(\d+)\s*Total interactions/i) || 
-                                interactionsText.match(/Total interactions[^\d]*(\d+)/i);
-        if (interactionsMatch && interactionsMatch[1]) {
-          result.totalInteractions = interactionsMatch[1];
-        }
-
-        // Extract individual metrics
-        ['Likes', 'Quotes', 'Replies', 'Reposts'].forEach(label => {
-          const key = label.toLowerCase();
-          const labelElement = Array.from(interactionsSection.querySelectorAll('span')).find(span => {
-            return span.textContent?.trim() === label;
-          });
+      // Helper function to extract engagement metrics
+      const extractEngagementMetric = (container, svgAriaLabel) => {
+        try {
+          const svg = container.querySelector(`svg[aria-label="${svgAriaLabel}"]`) || 
+                      container.querySelector(`svg[aria-label*="${svgAriaLabel}"]`);
           
-          if (labelElement) {
-            const container = labelElement.closest('div[class*="x49hn82"]');
-            if (container) {
-              const valueDiv = container.querySelector('div[class*="xc3tme8"]');
-              if (valueDiv) {
-                const valueSpan = valueDiv.querySelector('span[dir="auto"]');
-                if (valueSpan) {
-                  const text = valueSpan.textContent?.trim();
-                  const numMatch = text.match(/^\d+$/);
-                  if (numMatch) {
-                    const numValue = parseInt(numMatch[0], 10);
-                    if (numValue <= 100000000) {
-                      result[key] = numMatch[0];
-                    }
-                  }
+          if (!svg) return '0';
+          
+          const button = svg.closest('button') || svg.closest('[role="button"]') || svg.closest('div[class*="x6s0dn4"]');
+          if (!button) return '0';
+          
+          const parentContainer = button.parentElement || button;
+          
+          let countContainer = parentContainer.querySelector('span[class*="xmd891q"]');
+          if (!countContainer) {
+            countContainer = button.querySelector('span[class*="xmd891q"]');
+          }
+          
+          if (countContainer) {
+            const innerDiv = countContainer.querySelector('div[class*="xu9jpxn"]');
+            if (innerDiv) {
+              const countSpan = innerDiv.querySelector('span');
+              if (countSpan) {
+                const text = countSpan.textContent?.trim();
+                if (text && /^\d+$/.test(text)) {
+                  return text;
                 }
               }
             }
+            
+            const allSpans = countContainer.querySelectorAll('span');
+            for (const span of allSpans) {
+              const text = span.textContent?.trim();
+              if (text && /^\d+$/.test(text)) {
+                return text;
+              }
+            }
           }
+          
+          const countSpans = button.querySelectorAll('span[class*="x1o0tod"]');
+          for (const span of countSpans) {
+            const text = span.textContent?.trim();
+            if (text && /^\d+$/.test(text)) {
+              return text;
+            }
+          }
+          
+          const parentSpans = parentContainer.querySelectorAll('span');
+          for (const span of parentSpans) {
+            const text = span.textContent?.trim();
+            if (text && /^\d+$/.test(text) && text.length <= 6) {
+              return text;
+            }
+          }
+          
+          const buttonText = button.textContent?.trim() || '';
+          const match = buttonText.match(/\b(\d+)\b/);
+          if (match && match[1]) {
+            return match[1];
+          }
+          
+          return '0';
+        } catch (err) {
+          console.error(`Error extracting ${svgAriaLabel}:`, err);
+          return '0';
+        }
+      };
+
+      // Find engagement container - buttons are in div.x78zum5
+      let engagementContainer = document.querySelector('div.x78zum5');
+      
+      if (!engagementContainer) {
+        const containers = Array.from(document.querySelectorAll('div[class*="x78zum5"]'));
+        if (containers.length > 0) {
+          engagementContainer = containers.find(container => {
+            const hasLike = container.querySelector('svg[aria-label="Like"]') || 
+                          container.querySelector('svg[aria-label="Unlike"]');
+            return hasLike;
+          }) || containers[0];
+        }
+      }
+      
+      if (!engagementContainer) {
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        const likeButton = allButtons.find(btn => {
+          const svg = btn.querySelector('svg[aria-label="Like"]') || 
+                     btn.querySelector('svg[aria-label="Unlike"]');
+          return svg !== null;
         });
+        if (likeButton) {
+          engagementContainer = likeButton.closest('div') || likeButton.parentElement;
+        }
+      }
+      
+      if (!engagementContainer) {
+        console.log('❌ Could not find engagement container');
+        return result;
       }
 
+      // Extract metrics using the helper function
+      result.likes = extractEngagementMetric(engagementContainer, 'Like') || 
+                     extractEngagementMetric(engagementContainer, 'Unlike') || '0';
+      result.replies = extractEngagementMetric(engagementContainer, 'Reply') || '0';
+      result.reposts = extractEngagementMetric(engagementContainer, 'Repost') || '0';
+      result.shares = extractEngagementMetric(engagementContainer, 'Share') || '0';
+
+      // Calculate total interactions
+      const total = parseInt(result.likes || '0') + 
+                   parseInt(result.replies || '0') + 
+                   parseInt(result.reposts || '0') + 
+                   parseInt(result.shares || '0');
+      result.totalInteractions = total.toString();
+
+      console.log('📊 Extracted insights:', result);
       return result;
     });
+
+    console.log(`✅ Successfully extracted insights for post: ${postId || postLink}`);
+    console.log('📊 Insights data:', JSON.stringify(insights, null, 2));
 
     // Close browser
     if (browser) {
@@ -1765,445 +1693,6 @@ router.post('/api/logs/upload-sheets', async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// 11. Image proxy endpoint (duplicate - removing broken code)
-// The actual image-proxy route is at line 3814
-
-// 8b. Get all posts from user's profile (original method - kept as backup)
-router.post('/api/profile/posts-scrape', async (req, res) => {
-  let browser = null;
-  const overallTimeout = setTimeout(() => {
-    if (!res.headersSent) {
-      console.error('⏱️ Posts fetch timeout after 120 seconds');
-      res.status(504).json({
-        success: false,
-        error: 'Request timeout - fetching posts took too long'
-      });
-    }
-  }, 120000); // 2 minute overall timeout
-
-  try {
-    const username = req.body.username || req.query.username || req.headers['x-username'];
-    const password = req.body.password || req.query.password;
-
-    if (!username) {
-      clearTimeout(overallTimeout);
-      return res.status(400).json({
-        success: false,
-        error: 'Username is required'
-      });
-    }
-
-    if (!password) {
-      clearTimeout(overallTimeout);
-      return res.status(400).json({
-        success: false,
-        error: 'Password is required. Please provide password in request body.'
-      });
-    }
-
-    console.log(`📱 Fetching posts for profile: @${username}`);
-    const startTime = Date.now();
-
-    // Initialize browser session
-    const { browser: browserInstance, page } = await initializeBotWithSession({
-      username,
-      password,
-      botType: 'profile_scraper',
-      headless: true,
-      chromePath: null,
-    });
-
-    browser = browserInstance;
-
-    // Navigate to user's profile
-    const profileUrl = `https://www.threads.net/@${username}`;
-    console.log(`📍 Navigating to: ${profileUrl}`);
-    
-    await page.goto(profileUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 60000,
-    });
-
-    // Reduced initial wait - just wait for posts to appear
-    await sleep(2000);
-
-    // Wait for initial posts to load
-    try {
-      await page.waitForSelector('div[data-pressable-container="true"]', {
-        timeout: 10000
-      });
-    } catch (e) {
-      console.log('⚠️ No posts found initially');
-    }
-
-    // Optimized scrolling - fewer attempts, faster
-    const maxScrollAttempts = 5;
-    let scrollAttempts = 0;
-    let lastPostCount = 0;
-    
-    while (scrollAttempts < maxScrollAttempts) {
-      const currentPostCount = await page.evaluate(() => {
-        return document.querySelectorAll('div[data-pressable-container="true"]').length;
-      });
-      
-      if (currentPostCount === lastPostCount && scrollAttempts > 2) {
-        console.log(`📊 No new posts loaded after scroll ${scrollAttempts}, stopping`);
-        break;
-      }
-      
-      lastPostCount = currentPostCount;
-      await page.evaluate(() => {
-        window.scrollBy(0, 2000);
-      });
-      await sleep(2000);
-      scrollAttempts++;
-    }
-
-    // Extract all posts from profile page (this route is kept as backup)
-    // This route extracts posts directly from profile page without CSV matching
-    const maxPosts = parseInt(req.body.maxPosts) || 50;
-    const posts = await page.evaluate((maxPosts) => {
-      const containers = document.querySelectorAll('div[data-pressable-container="true"]');
-      const limit = Math.min(containers.length, maxPosts || 50);
-      const extractedPosts = [];
-
-      for (let index = 0; index < limit; index++) {
-        const container = containers[index];
-        try {
-          // Extract username - look for links with @username pattern
-          const profileLinks = container.querySelectorAll('a[href*="/@"]');
-          let username = '';
-          for (const link of profileLinks) {
-            const href = link.getAttribute('href') || '';
-            const text = link.textContent.trim();
-            // Get username from href or text
-            if (href.includes('/@')) {
-              const match = href.match(/\/@([^\/\?]+)/);
-              if (match) username = match[1];
-            }
-            if (!username && text && !text.includes(' ')) {
-              username = text.replace('@', '');
-            }
-            if (username) break;
-          }
-
-          // Extract post content - look for spans with meaningful text
-          const contentSpans = container.querySelectorAll('span[dir="auto"]');
-          let postContent = '';
-          const contentParts = [];
-          
-          for (const span of contentSpans) {
-            const text = span.textContent.trim();
-            // Filter: meaningful text that's not a timestamp, username, or engagement count
-            if (text.length > 15 && 
-                text.length < 2000 && 
-                !text.match(/^\d+[mhd]$/) && // Not "39m", "3d"
-                !text.match(/^@\w+$/) && // Not "@username"
-                !text.match(/^\d+$/) && // Not just numbers
-                !text.includes('followers') &&
-                !text.includes('following')) {
-              contentParts.push(text);
-            }
-          }
-          
-          // Join multiple content parts (for multi-line posts)
-          postContent = contentParts.join(' ').trim();
-
-          // Extract timestamp
-          const timeElement = container.querySelector('time');
-          let timestamp = '';
-          if (timeElement) {
-            timestamp = timeElement.getAttribute('datetime') || timeElement.textContent.trim();
-          }
-
-          // Extract post link
-          const postLinks = container.querySelectorAll('a[href*="/post/"]');
-          const postLink = postLinks.length > 0 ? postLinks[0].getAttribute('href') : '';
-          const postId = postLink ? postLink.split('/post/')[1]?.split('?')[0] : '';
-
-          // Extract media (images) - look for post images, not profile pictures
-          const mediaUrls = [];
-          
-          // Method 1: Look for images inside post media links (most reliable)
-          const postMediaLinks = container.querySelectorAll('a[href*="/post/"][href*="/media"]');
-          postMediaLinks.forEach(link => {
-            const picture = link.querySelector('picture');
-            if (picture) {
-              const img = picture.querySelector('img');
-              if (img) {
-                const src = img.getAttribute('src');
-                const srcset = img.getAttribute('srcset');
-                const alt = img.getAttribute('alt') || '';
-                
-                // Use srcset if available (higher quality), otherwise use src
-                let imageUrl = srcset ? srcset.split(',')[0].trim().split(' ')[0] : src;
-                
-                if (imageUrl && 
-                    imageUrl.startsWith('http') && 
-                    !alt.toLowerCase().includes('profile picture') &&
-                    !imageUrl.includes('profile_pic') &&
-                    !imageUrl.includes('s150x150') &&
-                    !imageUrl.includes('s36x36') &&
-                    !imageUrl.includes('s100x100')) {
-                  if (!mediaUrls.includes(imageUrl)) {
-                    mediaUrls.push(imageUrl);
-                  }
-                }
-              }
-            }
-          });
-          
-          // Method 1b: Look for images in divs with class x1xmf6yo (media container from HTML)
-          if (mediaUrls.length === 0) {
-            const mediaContainers = container.querySelectorAll('div[class*="x1xmf6yo"]');
-            mediaContainers.forEach(container => {
-              const picture = container.querySelector('picture');
-              if (picture) {
-                const img = picture.querySelector('img');
-                if (img) {
-                  const src = img.getAttribute('src');
-                  const srcset = img.getAttribute('srcset');
-                  const alt = img.getAttribute('alt') || '';
-                  
-                  let imageUrl = srcset ? srcset.split(',')[0].trim().split(' ')[0] : src;
-                  
-                  if (imageUrl && 
-                      imageUrl.startsWith('http') && 
-                      !alt.toLowerCase().includes('profile picture') &&
-                      !imageUrl.includes('profile_pic') &&
-                      !imageUrl.includes('s150x150') &&
-                      !imageUrl.includes('s36x36') &&
-                      !imageUrl.includes('s100x100')) {
-                    if (!mediaUrls.includes(imageUrl)) {
-                      mediaUrls.push(imageUrl);
-                    }
-                  }
-                }
-              }
-            });
-          }
-
-          // Extract engagement metrics from buttons at the bottom of the post
-          // Based on provided HTML: buttons are in div.x78zum5 > div.x6s0dn4.x78zum5.xl56j7k
-          const engagementContainer = container.querySelector('div.x78zum5') || 
-                                    container.querySelector('div[class*="x78zum5"]');
-          
-          let likes = '0';
-          let replies = '0';
-          let reposts = '0';
-          let shares = '0';
-          
-          if (engagementContainer) {
-            // Extract likes - Look for Like/Unlike button
-            const likeButton = engagementContainer.querySelector('svg[aria-label="Like"]') || 
-                            engagementContainer.querySelector('svg[aria-label="Unlike"]') ||
-                            engagementContainer.querySelector('svg[aria-label*="Like"]');
-            if (likeButton) {
-              const button = likeButton.closest('button');
-              if (button) {
-                // Look for count in span with class "x1o0tod x10l6tqk x13vifvy"
-                const countSpan = button.querySelector('span.x1o0tod') || 
-                                button.querySelector('span[class*="x1o0tod"]') ||
-                                button.querySelector('span[class*="x10l6tqk"]') ||
-                                button.querySelector('span[class*="x13vifvy"]') ||
-                                button.querySelector('div[class*="xu9jpxn"] span');
-                
-                if (countSpan) {
-                  const countText = countSpan.textContent?.trim() || '';
-                  const numMatch = countText.match(/^\d+$/);
-                  if (numMatch) {
-                    likes = numMatch[0];
-                  }
-                }
-                
-                // Fallback: try button text
-                if (likes === '0') {
-                  const buttonText = button.textContent.trim();
-                  const match = buttonText.match(/(\d+)/);
-                  if (match) {
-                    likes = match[1];
-                  }
-                }
-              }
-            }
-            
-            // Extract replies - Look for Reply button
-            const replyButton = engagementContainer.querySelector('svg[aria-label="Reply"]') || 
-                              engagementContainer.querySelector('svg[aria-label*="Reply"]');
-            if (replyButton) {
-              const button = replyButton.closest('button');
-              if (button) {
-                const countSpan = button.querySelector('span.x1o0tod') || 
-                                button.querySelector('span[class*="x1o0tod"]') ||
-                                button.querySelector('span[class*="x10l6tqk"]') ||
-                                button.querySelector('div[class*="xu9jpxn"] span');
-                
-                if (countSpan) {
-                  const countText = countSpan.textContent?.trim() || '';
-                  const numMatch = countText.match(/^\d+$/);
-                  if (numMatch) {
-                    replies = numMatch[0];
-                  }
-                }
-                
-                if (replies === '0') {
-                  const buttonText = button.textContent.trim();
-                  const match = buttonText.match(/(\d+)/);
-                  if (match) {
-                    replies = match[1];
-                  }
-                }
-              }
-            }
-            
-            // Extract reposts - Look for Repost button
-            const repostButton = engagementContainer.querySelector('svg[aria-label="Repost"]') || 
-                               engagementContainer.querySelector('svg[aria-label*="Repost"]');
-            if (repostButton) {
-              const button = repostButton.closest('button');
-              if (button) {
-                const countSpan = button.querySelector('span.x1o0tod') || 
-                                button.querySelector('span[class*="x1o0tod"]') ||
-                                button.querySelector('span[class*="x10l6tqk"]') ||
-                                button.querySelector('div[class*="xu9jpxn"] span');
-                
-                if (countSpan) {
-                  const countText = countSpan.textContent?.trim() || '';
-                  const numMatch = countText.match(/^\d+$/);
-                  if (numMatch) {
-                    reposts = numMatch[0];
-                  }
-                }
-                
-                if (reposts === '0') {
-                  const buttonText = button.textContent.trim();
-                  const match = buttonText.match(/(\d+)/);
-                  if (match) {
-                    reposts = match[1];
-                  }
-                }
-              }
-            }
-            
-            // Extract shares - Look for Share button
-            const shareButton = engagementContainer.querySelector('svg[aria-label="Share"]') || 
-                              engagementContainer.querySelector('svg[aria-label*="Share"]');
-            if (shareButton) {
-              const button = shareButton.closest('button');
-              if (button) {
-                const countSpan = button.querySelector('span.x1o0tod') || 
-                                button.querySelector('span[class*="x1o0tod"]') ||
-                                button.querySelector('span[class*="x10l6tqk"]') ||
-                                button.querySelector('div[class*="xu9jpxn"] span');
-                
-                if (countSpan) {
-                  const countText = countSpan.textContent?.trim() || '';
-                  const numMatch = countText.match(/^\d+$/);
-                  if (numMatch) {
-                    shares = numMatch[0];
-                  }
-                }
-                
-                if (shares === '0') {
-                  const buttonText = button.textContent.trim();
-                  const match = buttonText.match(/(\d+)/);
-                  if (match) {
-                    shares = match[1];
-                  }
-                }
-              }
-            }
-          }
-
-          // Only include posts with valid data
-          if (username && (postContent || postLink)) {
-            extractedPosts.push({
-              index,
-              username,
-              postContent,
-              postLink,
-              postId,
-              timestamp,
-              mediaUrls,
-              likes,
-              replies,
-              reposts,
-              shares
-            });
-          }
-        } catch (err) {
-          console.error(`Error extracting post ${index}:`, err);
-        }
-      }
-
-      return extractedPosts;
-    }, maxPosts);
-
-    console.log(`✅ Extracted ${posts.length} posts from profile page`);
-
-    // Close browser
-    if (browser) {
-      await browser.close();
-    }
-
-    clearTimeout(overallTimeout);
-    
-    const elapsedTime = Math.round((Date.now() - startTime) / 1000);
-    
-    res.json({
-      success: true,
-      data: posts.map((post, index) => ({
-        index,
-        postId: post.postId || '',
-        postLink: post.postLink || '',
-        postContent: post.postContent || '',
-        timestamp: post.timestamp || '',
-        username: post.username || username,
-        mediaUrls: post.mediaUrls || [],
-        likes: post.likes || '0',
-        replies: post.replies || '0',
-        reposts: post.reposts || '0',
-        shares: post.shares || '0',
-        insights: {
-          views: '0',
-          totalInteractions: '0',
-          likes: post.likes || '0',
-          quotes: '0',
-          replies: post.replies || '0',
-          reposts: post.reposts || '0',
-          profileFollows: '0'
-        }
-      })),
-      count: posts.length,
-      username: username,
-      elapsedTime: elapsedTime,
-      fetchedInsights: false,
-      totalPosts: posts.length,
-      source: 'profile_scrape'
-    });
-
-  } catch (error) {
-    clearTimeout(overallTimeout);
-    console.error('❌ Error fetching posts from profile:', error);
-    console.error('❌ Error stack:', error.stack);
-    
-    // Close browser on error
-    if (browser) {
-      try {
-        await browser.close();
-      } catch (closeError) {
-        console.error('❌ Error closing browser:', closeError);
-      }
-    }
-    
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to fetch posts from profile',
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
   }
 });
 

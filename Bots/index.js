@@ -1003,6 +1003,9 @@ async function interactWithPosts(page, config, stats, processedPostIds, sessionI
     // 4. Scroll after processing
     await performSmartScroll(page);
 
+    // Delay after processing each post
+    await sleep(randomDelay(4000, 7000));
+
     return { stats, shouldContinue: true, foundNewPost: true };
   } catch (error) {
     logError(`❌ Error in interactWithPosts: ${error.message}`);
